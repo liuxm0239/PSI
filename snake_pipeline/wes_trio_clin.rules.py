@@ -1,6 +1,8 @@
 #########################################
-# CNV calling using cnvkit for WGS samples
+# SNP calling using GATK joint-calling  for Trio samples
 # by Xingmin Liu
+# https://hpc.nih.gov/training/gatk_tutorial/
+# https://www.ibm.com/downloads/cas/ZJQD0QAL
 #########################################
 from datetime import date
 
