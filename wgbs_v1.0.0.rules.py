@@ -1,0 +1,178 @@
+#########################################
+# CNV calling using cnvkit for WGS samples
+# by Xingmin Liu
+#########################################
+from datetime import date
+import json
+from os.path import join, basename, dirname
+
+configfile: 'config.yaml'
+
+# Handle sample file names from samples.json
+FILES = json.load(open(config['SAMPLES_JSON']))
+SAMPLES = sorted(FILES.keys())
+
+#SAMPLES={ "TB1", "TB2"}
+REFERENCE="/HD101TB/bioinfo/reference/hg38/"
+REFBED="/HD101TB/bioinfo/reference/hg38/hg38.bed"
+#BWAINDEX="/HD101TB/conda/Genome/bwaIndex/hg38"
+GATK="/opt/gatk/gatk-4.3.0.0/gatk"
+HAPMAP="/HD101TB/conda/Genome/hapmap_3.3.hg38.vcf.gz"
+DBSNP="/HD101TB/conda/Genome/dbsnp_138.hg38.vcf.gz"
+OMNI="/HD101TB/conda/Genome/1000G_omni2.5.hg38.vcf.gz"
+PHASE1="/HD101TB/conda/Genome/1000G_phase1.snps.high_confidence.hg38.vcf.gz"
+MILLS="/HD101TB/conda/Genome/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"
+PON="/HD101TB/conda/Genome/cnvkit/PoN/Reference.cnn"
+TIME=date.today().isoformat()
+#TIME="2023-08-20"
+
+def double_threads(wildcards, threads):
+    return threads * 2
+
+rule all:
+    input:
+        expand("{time}/s02_alignment/s021_Dedup/{sample}.bam", sample=SAMPLES, time=TIME),
+        expand("{time}/s03_methylation/{sample}.bismark_report.html", sample=SAMPLES, time=TIME),
+        expand("{time}/s03_methylation/cgmaptools/{sample}.mstat.data", sample=SAMPLES, time=TIME)
+
+rule FASTP:
+    input:
+        R1 = lambda wildcards: FILES[wildcards.sample]['R1'],
+        R2 = lambda wildcards: FILES[wildcards.sample]['R2']
+        #R1="raw.fastq/{sample}_R1.fastq.gz",
+        #R2="raw.fastq/{sample}_R2.fastq.gz"
+    output:
+        "{time}/s01_fastqc/{sample}_clean_R1.fastq.gz",
+        "{time}/s01_fastqc/{sample}_clean_R2.fastq.gz"
+    threads: 2
+    resources: mem_mb=6000
+    #conda:        "Genomics"
+    log:
+        "{time}/s01_fastqc/{sample}.fastp_fastqc.log"
+    shell: """
+        #######################
+	#echo "Working on raw data fastqc"
+	#fastqc -t {threads} {input.R1} {input.R2} -o {wildcards.time}/s01_fastqc/ 2>&1 >{log}
+	
+        echo "Working on fastp triming"
+        fastp --in1 {input.R1} --in2 {input.R2} --out1 {output[0]} --out2 {output[1]} -5 -q 20 --json {wildcards.time}/s01_fastqc/{wildcards.sample}.fastp.Clean.json --html {TIME}/s01_fastqc/{wildcards.sample}.fastp.Clean.html --thread  {threads} --trim_poly_g --detect_adapter_for_pe  2>&1  >> {log}
+
+        echo "Working on clean data fastqc"
+        fastqc -t  {threads} {output} -o {wildcards.time}/s01_fastqc/  2>&1 >>{log} 
+	#######################
+    """
+
+rule Bismark:
+    input: 
+        R1="{time}/s01_fastqc/{sample}_clean_R1.fastq.gz",
+        R2="{time}/s01_fastqc/{sample}_clean_R2.fastq.gz"
+    output:
+        bam=temp("{time}/s02_alignment/s020_bismark/{sample}.bismark.bam")
+    threads: 6
+    resources: mem_mb=36000
+    #conda:        "Genomics"
+    log:
+        "{time}/s02_alignment/{sample}_alignment.log"
+    params:
+        platform ="BGI"
+    shell: """
+        #######################	
+        echo "Working on Bismark alignment"
+        #'--score_min L,0,-0.2' for bowtie2 end 2 end alignment
+        bismark --parallel {threads} --bowtie2\
+            --rg_tag --rg_id {wildcards.sample} --rg_sample {wildcards.sample}\
+            --score_min L,0,-0.2 {REFERENCE} \
+            -1 {input.R1} -2 {input.R2} \
+            --temp_dir {wildcards.time}/s02_alignment/s020_bismark \
+            --output_dir {wildcards.time}/s02_alignment/s020_bismark \
+            2>logs/s020_bismark.log &&\
+        reads_1=$(echo {input.R1} | cut -d/ -f3 | sed 's/.fq.gz//;s/.fastq.gz//;s/.fq//;s/.fastq//')
+        mv {wildcards.time}/s02_alignment/s020_bismark/${{reads_1}}_bismark_bt2_pe.bam \
+            {wildcards.time}/s02_alignment/s020_bismark/{wildcards.sample}.bismark.bam &&\
+        mv {wildcards.time}/s02_alignment/s020_bismark/${{reads_1}}_bismark_bt2_PE_report.txt \
+        {wildcards.time}/s02_alignment/s020_bismark/{wildcards.sample}.bismark_report.txt
+	#######################
+	"""
+
+rule deduplicate_bismark:
+    input:
+        bam="{time}/s02_alignment/s020_bismark/{sample}.bismark.bam"
+    output:
+        bam="{time}/s02_alignment/s021_Dedup/{sample}.bam",
+        metrics="{time}/s02_alignment/s021_Dedup/{sample}.deduplication_report.txt"
+    threads: 8
+    resources: mem_mb=10000
+    #conda:        "Genomics"
+    log:
+        "{time}/s02_alignment/{sample}_s021_Dedup.log"
+    shell: """
+	#######################
+        echo "Working on MarkDuplicates"
+        deduplicate_bismark -p --bam {input.bam} --output_dir {wildcards.time}/s02_alignment/s021_dedup/ 2>{log}
+        mv {wildcards.time}/s02_alignment/s021_dedup/{wildcards.sample}.bismark.deduplicated.bam {output.bam}
+        mv {wildcards.time}/s02_alignment/s021_dedup/{wildcards.sample}.bismark.deduplication_report.txt {output.metrics}
+
+	#######################
+	"""
+
+rule methylation_extractor:
+    input:
+        bam="{time}/s02_alignment/s021_Dedup/{sample}.bam"
+    output:
+        bam="{time}/s03_methylation/{sample}.bismark_report.html",
+        cxreport="{time}/s03_methylation/{sample}.CX_report.txt.gz"
+    threads: 8
+    resources: mem_mb=60000
+    #conda:        "Genomics"
+    log:
+        "{time}/s03_methylation/{sample}_s03_methylation.log"
+    shell: """
+	#######################
+        echo "Working on SplitIntervals for parallel BQSR"
+        bismark_methylation_extractor -p --no_overlap --parallel {threads} --buffer_size 8G \
+            --ignore_r2 3 --cytosine_report --CX_context --comprehensive \
+            --gzip -bedGraph --genome_folder {REFERENCE} -o {wildcards.time}/s03_methylation \
+            {input.bam}  2>{log}
+
+        bismark2report --alignment_report {wildcards.time}/s02_alignment/s020_bismark/{wildcards.sample}.bismark_report.txt \
+            --splitting_report  {wildcards.time}/s03_methylation/{wildcards.sample}.dd_splitting_report.txt \
+            --mbias_report {wildcards.time}/s03_methylation/{wildcards.sample}.dd.M-bias.txt \
+            --dedup_report {wildcards.time}/s02_alignment/s021_dedup/{wildcards.sample}.deduplication_report.txt \
+            -o {wildcards.time}/s03_methylation/{wildcards.sample}.bismark_report.html 2>>{log}
+	#######################
+	"""
+
+rule cgmaptools:
+    input:
+        cxreport="{time}/s03_methylation/{sample}.CX_report.txt.gz"
+    output:
+        cgmap=temp("{time}/s03_methylation/cgmaptools/{sample}.CGmap.gz"),
+        mbin="{time}/s03_methylation/cgmaptools/{sample}.sort.mbin.data",
+        mecs="{time}/s03_methylation/cgmaptools/{sample}.mec_stat.data",
+        mstat="{time}/s03_methylation/cgmaptools/{sample}.mstat.data"
+    threads: 2
+    resources: mem_mb=6000
+    conda: "py27"
+    log:
+        "{time}/s03_methylation/{sample}_s031_cgmaptools.log"
+    shell:"""
+    #######################
+    cgmaptools convert bismark2cgmap -i {input.cxreport} -o {output.cgmap} 2>{log}
+
+    cgmaptools mbin -i {output.cgmap} -B 100000 -c 5 -f png \
+        -p {wildcards.time}/s03_methylation/cgmaptools/{wildcards.sample} \
+        -t {wildcards.sample} > \
+        {output.mbin} 2>>{log}
+
+    cgmaptools mec stat -i {output.cgmap} \
+        -p {wildcards.time}/s03_methylation/cgmaptools/{wildcards.sample}  -f png >\
+        {output.mecs} 2>>{log} 
+
+    cgmaptools mstat -i {output.cgmap} -c 5 -f png \
+        -p {wildcards.time}/s03_methylation/cgmaptools/{wildcards.sample} \
+        -t {wildcards.sample} > \
+        {output.mstat} 2>>{log} 
+    #######################
+    """
+
+
