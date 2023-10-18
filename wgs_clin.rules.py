@@ -173,16 +173,17 @@ rule GATK_BQSR:
     shell: """
 	#######################
         echo "Working on SplitIntervals for parallel BQSR"
+        ## Heldenbrand, J.R., Baheti, S., Bockol, M.A. et al. Recommendations for performance optimizations when using GATK3.8 and GATK4. BMC Bioinformatics 20, 557 (2019). https://doi.org/10.1186/s12859-019-3169-7
         if [ ! -d "{wildcards.time}/s02_alignment/s022_Brecal/interval-files" ] 
         then
-            {GATK} SplitIntervals -R {REFERENCE} -L {REFBED} --scatter-count 20 \
+            {GATK} SplitIntervals -R {REFERENCE} -L {REFBED} --scatter-count 6 \
                     -O {wildcards.time}/s02_alignment/s022_Brecal/interval-files 2>&1 > {log}
         fi
 
         echo "Working on GATK BQSR"
         for sam in {wildcards.sample}
         do 
-            for i in `seq -f '%04g' 0 19`
+            for i in `seq -f '%04g' 0 5`
             do
                 outfile={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_data_${{i}}.table
                 {GATK} --java-options "-Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
@@ -201,7 +202,7 @@ rule GATK_BQSR:
                     -O {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table 2>>{log} && \
 
             echo "Working on ApplyBQSR"
-            for i in `seq -f '%04g' 0 19`
+            for i in `seq -f '%04g' 0 5`
             do 
                 bqfile={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table
                 outputf={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_${{i}}.bam
@@ -266,14 +267,14 @@ rule gVCF:
         echo "Working on HaplotypeCaller gVCF"
         if [ ! -d "{wildcards.time}/s03_variant/interval-files" ]
         then 
-            {GATK} SplitIntervals -R {REFERENCE} -L {REFBED} --scatter-count 20\
+            {GATK} SplitIntervals -R {REFERENCE} -L {REFBED} --scatter-count 6\
                     -O {wildcards.time}/s03_variant/interval-files 2>>{log}
         fi
 
         for sam in {wildcards.sample}
         do 
-            for i in `seq -f '%04g' 0 19`
-            # '0 11' according to {GATK} SplitIntervals  --scatter-count 20
+            for i in `seq -f '%04g' 0 5`
+            # '0 11' according to {GATK} SplitIntervals  --scatter-count 6
             do 
                 outfile={wildcards.time}/s03_variant/GATK/{wildcards.sample}_${{i}}.g.vcf.gz
                 {GATK} --java-options "-Xms4G -Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=2" HaplotypeCaller \
