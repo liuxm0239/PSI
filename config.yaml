@@ -1,0 +1,8 @@
+# Sequencing platform, Valid values:[ CAPILLARY, DNBSEQ (MGI/BGI), ELEMENT, HELICOS, ILLUMINA, IONTORRENT, LS454, ONT (Oxford Nanopore), PACBIO (Pacific Biosciences), SOLID, ULTIMA ].
+PLATFORM: 'ILLUMINA'
+
+# Output directory
+TIME: '2023-10-18'
+
+# Path to a JSON file with samples and their corresponding FASTQ files.
+SAMPLES_JSON: '/HD101TB/bioinfo/liuxingmin/Reseach/cfDNA/samples.json'
