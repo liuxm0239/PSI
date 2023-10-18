@@ -11,6 +11,7 @@ configfile: 'config.yaml'
 # Handle sample file names from samples.json
 FILES = json.load(open(config['SAMPLES_JSON']))
 SAMPLES = sorted(FILES.keys())
+TIME=config['TIME']
 
 REFERENCE="/SlurmDatabase/Clinical/ClinSV/reference/hg38/hg38.fasta"
 REFBED="/SlurmDatabase/Clinical/ClinSV/reference/hg38/hg38.bed"
@@ -22,15 +23,13 @@ OMNI="/HD101TB/conda/Genome/1000G_omni2.5.hg38.vcf.gz"
 PHASE1="/HD101TB/conda/Genome/1000G_phase1.snps.high_confidence.hg38.vcf.gz"
 MILLS="/HD101TB/conda/Genome/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"
 PON="/HD101TB/conda/Genome/cnvkit/PoN/Reference.cnn"
-#TIME=date.today().isoformat()
-TIME=config['TIME']
 
 rule all:
     input:
         expand("{time}/s01_fastqc/{sample}_clean_R2_fastqc.html", sample=SAMPLES, time=TIME),
-        expand("{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam", sample=SAMPLES, time=TIME ),
+        expand("{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam", sample=SAMPLES, time=TIME )
         #expand("{time}/s03_variant/cnvkit/{sample}.marked.BQSR.call.cns", sample=SAMPLES, time=TIME),
-        expand("{time}/s03_variant/GATK/{sample}_merged_VQSR_SNP_INDEL.vcf.gz", sample=SAMPLES, time=TIME)
+        #expand("{time}/s03_variant/GATK/{sample}_merged_VQSR_SNP_INDEL.vcf.gz", sample=SAMPLES, time=TIME)
         #expand("{time}/s03_variant/GATK/{sample}_HC.CNNscore.filtered.vcf.gz", sample=SAMPLES, time=TIME),
         #expand("{time}/s03_variant/clinSV/{sample}/SVs/joined/SV-CNV.PASS.vcf" , sample=SAMPLES, time=TIME),
         #expand("{time}/s03_variant/clinSV/{sample}/SVs/joined/CNV.RARE_PASS_GENE.txt", sample=SAMPLES, time=TIME)
@@ -62,9 +61,9 @@ rule FASTP:
                 --out1 {output[0]} --out2 {output[1]} \
                 --detect_adapter_for_pe --trim_poly_g --trim_poly_x \
                 --length_required 50 \
-                --json {wildcards.time}/s01_fastqc/{wildcards.sample}.fastp.json \
-                --html {TIME}/s01_fastqc/{wildcards.sample}.fastp.html \
-                --thread {threads} -p 2>&1  >> {log}
+                --json {wildcards.time}/s01_fastqc/{wildcards.sample}.fastp.Clean.json \
+                --html {TIME}/s01_fastqc/{wildcards.sample}.fastp.Clean.html \
+                --thread {threads} -p 2>&1 >> {log} 
 
         #echo "Working on clean data fastqc"
         #fastqc -t  {threads} {output} -o {wildcards.time}/s01_fastqc/ 2>&1 >> {log}
@@ -197,22 +196,36 @@ rule GATK_BQSR:
             wait
 
             find {wildcards.time}/s02_alignment/s022_Brecal/ \
-                    -type f -name "{wildcards.sample}*_*.table" \
+                    -type f -name "{wildcards.sample}*.table" \
                     > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.list 2>>{log}
 
             {GATK} GatherBQSRReports -I {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.list \
-                    -O {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table 2>>{log} 
+                    -O {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table 2>>{log} && \
+
+            echo "Working on ApplyBQSR"
+            for i in `seq -f '%04g' 0 19`
+            do 
+                bqfile={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table
+                outputf={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_${{i}}.bam
+                {GATK} --java-options "-Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
+                ApplyBQSR -L {wildcards.time}/s02_alignment/s022_Brecal/interval-files/${{i}}-scattered.interval_list \
+                -R {REFERENCE} -bqsr ${{bqfile}} \
+                --static-quantized-quals 10 --static-quantized-quals 20 --static-quantized-quals 30 \
+                -I {input.bam} -O ${{outputf}} 2>>{log} &
+            done
+            wait
         done
         
-        #samtools view -b -f 4 {input.bam} > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.unmapped.bam
+        samtools view -b -f 4 {input.bam} > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.unmapped.bam
+        samtools view -b -f 8 {input.bam} > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.mate.unmapped.bam
 
-        bqfile={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table
-        {GATK} --java-options "-Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
-            ApplyBQSR -R {REFERENCE} -bqsr ${{bqfile}} \
-            --static-quantized-quals 10 --static-quantized-quals 20 --static-quantized-quals 30 \
-            -I {input.bam} -O {output.bam} 2>>{log} 
-        mv {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.marked.BQSR.bai {output.index}
-        #samtools index -@ {threads} {output.bam} 2>>{log}
+        echo "Working on merge BQSR bam"
+        samtools merge -f {output.bam} \
+                {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal*.bam \
+                {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.unmapped.bam \
+                {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.mate.unmapped.bam \
+                2>>{log} &&\
+        samtools index -@ {threads} {output.bam} 2>>{log}
 
         # bam validation
         {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
@@ -232,7 +245,6 @@ rule GATK_BQSR:
         mkdir -p  {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_mosdepth
         mosdepth -t {threads} -b 5000 -Q 20 \
                 {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_mosdepth/{wildcards.sample}_depth {output.bam} 2>>{log}
-
 	#######################
 	"""
 
