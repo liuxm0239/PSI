@@ -33,12 +33,12 @@ def clevage_site(sam, site):
     #if not any( [mstrand  == 'F', mstrand  == 'R' ]) :
     #    raise ValueError("Error: strand of CpG site not provided")
 
-    clevage = [None, None] # [clevage_Forward, clevage_Reverse]
+    clevage = [None, None, None, None] # [clevage_Forward, clevage_Reverse]
 
-    depth = sam.count(site[0], site[1], site[2])
+    depth = sam.count(site[0], site[1], site[2]+1)
 
     if depth > 0:
-        iter = sam.fetch(site[0], site[1], site[2])
+        iter = sam.fetch(site[0], site[1], site[2]+1)
         #iter = sam.fetch(site[0], site[2], site[2] + 1)
         
         depth_F = 0    
@@ -47,6 +47,8 @@ def clevage_site(sam, site):
         match_R = 0
 
         for read in iter:
+            if any( [read.is_duplicate, not read.is_proper_pair, read.template_length > 600] ):
+                continue
             if read.is_forward:
                 # for sites in forward strand
                 depth_F += 1
@@ -55,10 +57,15 @@ def clevage_site(sam, site):
             else:
                 # for sites in reverse strand
                 depth_R += 1
-                if read.reference_end == site[1]:
+                if read.reference_end == site[1] + 1:
                     match_R += 1
-        if depth_F > 0 : clevage[0] = match_F / depth_F
-        if depth_R > 0 : clevage[1] = match_R / depth_R
+
+        if depth_F > 0 : 
+            clevage[0] = match_F / depth_F
+            clevage[2] = depth_F
+        if depth_R > 0 : 
+            clevage[1] = match_R / depth_R
+            clevage[3] = depth_R
 
     #clevage.append(depth)
     #if mstrand  == 'F':
@@ -120,64 +127,56 @@ def clevage_window(sam, site):
 
 ###############################################################
 
+###############################################################
 # Bam file handler
 sam = pysam.AlignmentFile(args.bam, 'rb')
 #    '/SlurmDatabase/Clinical/2023/0810_nipt/2023-07-26/s02_alignment/s022_Brecal/EX-02-3061-1A_S1.marked.BQSR.bam', 'rb')
 
 # read in CpG sites
 cpg = pd.read_csv(args.cpg, sep="\t", header=None)
-cpg.columns = ['Chr', 'Start', 'End', 'Tumor_ave', 'Normal_ave', 'Strand']
-
-# classfy CpG sites by using methylation levels
-cpgH = cpg[(cpg['Tumor_ave'] > args.hyper)].copy()
-cpgL = cpg[(cpg['Tumor_ave'] < args.hypo)].copy()
-del cpg
-
-###############################################################
+cpg.columns = ['Chr', 'Start', 'End']
 
 # hyper methylation sites analysis
-dfh = pd.DataFrame(columns=['-5', '-4', '-3', '-2', '-1', 'C', 'G', '2', '3', '4', '5'])
+dfh = pd.DataFrame(columns=['-5', '-4', '-3', '-2', '-1', 'C', 'G', '2', '3', '4', '5', 'Chr', 'Start', 'End', 'Depth'])
 count_h = 0
 
-for idx in cpgH.index:
-    site = (cpgH['Chr'][idx], cpgH['Start'][idx], cpgH['End'][idx])
+#for idx in cpg.index:
+for row in cpg.itertuples():
+    site = (row.Chr, row.Start, row.End)
+    #site = (cpg['Chr'][idx], cpg['Start'][idx], cpg['End'][idx])
     #if sam.count(site[0], site[1], site[2]) > 0:
     if sam.count(site[0], site[1] - 5, site[2] + 7) > 0:
         count_h += 1
         #mstrand = cpgH['Strand'][idx]
         win = clevage_window(sam, site)
-        #if mstrand = 'F':
-        dfh.loc[len(dfh)] = [row[0] for row in win][0:11]
-        dfh.loc[len(dfh)] = [row[1] for row in win][1:12]
+
+        fw = list((row[0] for row in win))[0:11]
+        fw_depth = sum( filter(None, list((row[2] for row in win))[0:11]) )
+        fw.extend(list(site))
+        fw.append(fw_depth)
+
+        rv = list((row[1] for row in win))[11:0:-1]
+        rv_depth = sum( filter(None,  list((row[3] for row in win))[1:12]) )
+        rv.extend(list(site))
+        rv.append(rv_depth)
+
+        dfh.loc[len(dfh),:] = fw
+        dfh.loc[len(dfh),:] = rv
+
+        #dfh.loc[len(dfh)] = fw
+        #dfh.loc[len(dfh)] = rv
+
+        #dfh = pd.concat([dfh, pd.Series(fw, index=dfh.columns)], ignore_index=True)
+        #dfh = pd.concat([dfh, pd.Series(rv, index=dfh.columns)], ignore_index=True)
 
 fh = io.open( args.output, "w", encoding="utf-8") 
 fh.write( "\t".join(['sample', '-5', '-4', '-3', '-2', '-1', 'C', 'G', '2', '3', '4', '5', 'CpG_counts'] ))
 fh.write( "\n")
-fh.write( "\t".join([ '_'.join(['hyper', args.id]), "\t".join( [str(i) for i in dfh.mean() ]), str(count_h)] ))
+fh.write( "\t".join([ '_'.join(['CpG', args.id]), "\t".join( [str(i) for i in dfh[['-5', '-4', '-3', '-2', '-1', 'C', 'G', '2', '3', '4', '5']].mean() ]), str(count_h)] ))
 fh.write( "\n")
 fh.close()
 
-#dfh.to_csv("".join([args.output, ".Cleavage_proportion_hyper.csv.gz"]), compression='gzip', index=False, chunksize=1000000)
+dfh.to_csv("".join([args.output, ".Cleavage_proportion.csv.gz"]), compression='gzip', index=False, chunksize=1000000)
 del dfh
 
-###############################################################
-
-# hypo methylation sites analysis
-dfl = pd.DataFrame(columns=['-5', '-4', '-3', '-2', '-1', 'C', 'G', '2', '3', '4', '5'])
-count_l = 0
-for idx in cpgL.index:
-    site = (cpgL['Chr'][idx], cpgL['Start'][idx], cpgL['End'][idx])
-    if sam.count(site[0], site[1] - 5, site[2] + 7) > 0:
-        count_l += 1
-        #mstrand = cpgL['Strand'][idx]
-        #mstrand = 'F'
-        win = clevage_window(sam, site)
-        #if mstrand = 'F':
-        dfl.loc[len(dfl)] = [row[0] for row in win][0:11]
-        dfl.loc[len(dfl)] = [row[1] for row in win][1:12]
-    #print(clevage_window(sam, site, mstrand))
-fh = io.open( args.output, "a", encoding="utf-8") 
-fh.write( "\t".join([ '_'.join(['hypo', args.id]), "\t".join([str(i) for i in dfl.mean() ]), str(count_l) ] ))
-fh.close()
-#dfl.to_csv("".join([ args.output,".Cleavage_proportion_hypo.csv.gz"]), compression='gzip', index=False, chunksize=1000000)
 ###############################################################

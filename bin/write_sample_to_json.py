@@ -21,7 +21,8 @@ if not os.path.exists(args.fastq_dir):
 	exit()
 
 # glob all the fastq files
-fastqs = glob(args.fastq_dir + '/*/*fq.gz')
+fastqs = glob(args.fastq_dir + '/*/*q.gz')
+print(fastqs)
 FILES = {}
 
 # Change this line to extract a sample name from each filename, the folder name is the sample name in my case
@@ -29,8 +30,9 @@ SAMPLES = [fastq.split('/')[-2] for fastq in fastqs]
 
 for sample in SAMPLES:
     # Change 'R1' and 'R2' to match the way your mate pairs are marked.
-    mate1 = lambda fastq: sample in fastq and '_1' in fastq
-    mate2 = lambda fastq: sample in fastq and '_2' in fastq
+    mate1 = lambda fastq: sample in fastq and ('_1.fastq.gz' in fastq or '_1.fq.gz' in fastq or 'R1.fastq.gz' in fastq or 'R1.fq.gz' in fastq ) 
+    mate2 = lambda fastq: sample in fastq and ('_2.fastq.gz' in fastq or '_2.fq.gz' in fastq or 'R2.fastq.gz' in fastq or 'R2.fq.gz' in fastq )
+
     FILES[sample] = {}
     FILES[sample]['R1'] = sorted(filter(mate1, fastqs))
     FILES[sample]['R2'] = sorted(filter(mate2, fastqs))

@@ -11,27 +11,28 @@ configfile: 'config.yaml'
 # Handle sample file names from samples.json
 FILES = json.load(open(config['SAMPLES_JSON']))
 SAMPLES = sorted(FILES.keys())
+TIME=config['TIME']
 
-REFERENCE="/HD101TB/bioinfo/reference/pseudomonas_aeruginosa/data/GCF_000006765.1/GCF_000006765.1_ASM676v1_genomic.fna"
-REFBED="/HD101TB/bioinfo/reference/pseudomonas_aeruginosa/data/GCF_000006765.1/GCF_000006765.1_ASM676v1_genomic.fna.bed"
+REFERENCE="/SlurmDatabase/Clinical/ClinSV/reference/hg38/hg38.fasta"
+REFBED="/SlurmDatabase/Clinical/ClinSV/reference/hg38/hg38.bed"
 GATK="/opt/gatk/gatk-4.3.0.0/gatk"
-plotBAF="/SlurmDatabase/Clinical/2023/0905_clin/plotBAF.R"
+plotBAF="/HD101TB/bioinfo/liuxingmin/Clinical/snk/bin/plotBAF.R"
 HAPMAP="/HD101TB/conda/Genome/hapmap_3.3.hg38.vcf.gz"
 DBSNP="/HD101TB/conda/Genome/dbsnp_138.hg38.vcf.gz"
 OMNI="/HD101TB/conda/Genome/1000G_omni2.5.hg38.vcf.gz"
 PHASE1="/HD101TB/conda/Genome/1000G_phase1.snps.high_confidence.hg38.vcf.gz"
 MILLS="/HD101TB/conda/Genome/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"
 PON="/HD101TB/conda/Genome/cnvkit/PoN/Reference.cnn"
-#TIME=date.today().isoformat()
-TIME=config['TIME']
 
 rule all:
     input:
-        expand("{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam", sample=SAMPLES, time=TIME )
+        expand("{time}/s01_fastqc/{sample}_clean_R2_fastqc.html", sample=SAMPLES, time=TIME),
+        expand("{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam", sample=SAMPLES, time=TIME ),
         #expand("{time}/s03_variant/cnvkit/{sample}.marked.BQSR.call.cns", sample=SAMPLES, time=TIME),
-        #expand("{time}/s03_variant/clinSV/{sample}/SVs/joined/SV-CNV.PASS.vcf" , sample=SAMPLES, time=TIME),
-        #expand("{time}/s03_variant/GATK/{sample}_merged_VQSR_SNP_INDEL.vcf.gz", sample=SAMPLES, time=TIME),
+        expand("{time}/s04_report/multiqc_report.html", time=TIME )
+        #expand("{time}/s03_variant/GATK/{sample}_merged_VQSR_SNP_INDEL.vcf.gz", sample=SAMPLES, time=TIME)
         #expand("{time}/s03_variant/GATK/{sample}_HC.CNNscore.filtered.vcf.gz", sample=SAMPLES, time=TIME),
+        #expand("{time}/s03_variant/clinSV/{sample}/SVs/joined/SV-CNV.PASS.vcf" , sample=SAMPLES, time=TIME),
         #expand("{time}/s03_variant/clinSV/{sample}/SVs/joined/CNV.RARE_PASS_GENE.txt", sample=SAMPLES, time=TIME)
 
 rule FASTP:
@@ -42,22 +43,64 @@ rule FASTP:
         #R2="raw.fastq/{sample}_2.fq.gz"
     output:
         "{time}/s01_fastqc/{sample}_clean_R1.fastq.gz",
-        "{time}/s01_fastqc/{sample}_clean_R2.fastq.gz"
+        "{time}/s01_fastqc/{sample}_clean_R2.fastq.gz",
+        "{time}/s01_fastqc/{sample}_R1.fastq.gz",
+        "{time}/s01_fastqc/{sample}_R2.fastq.gz"
     threads: 2
     resources: mem_mb=6000
     #conda:        "Genomics"
     log:
-        "{time}/s01_fastqc/{sample}.fastp_fastqc.log"
+        "{time}/s01_fastqc/{sample}.fastp.log"
     shell: """
         #######################
 	#echo "Working on raw data fastqc"
-	#fastqc -t {threads} {input.R1} {input.R2} -o {wildcards.time}/s01_fastqc/ > {log} 2>&1
+        if [ -f {wildcards.time}/s01_fastqc/{wildcards.sample}_R1.fastq.gz ]; then
+            ls {wildcards.time}/s01_fastqc/{wildcards.sample}* >\
+                    {wildcards.time}/s01_fastqc/{wildcards.sample}_old
+            xargs rm < {wildcards.time}/s01_fastqc/{wildcards.sample}_old
+        fi
+
+        ln -s $(realpath {input.R1}) {wildcards.time}/s01_fastqc/{wildcards.sample}_R1.fastq.gz
+        ln -s $(realpath {input.R2}) {wildcards.time}/s01_fastqc/{wildcards.sample}_R2.fastq.gz
 	
         echo "Working on fastp triming"
-        fastp --in1 {input.R1} --in2 {input.R2} --out1 {output[0]} --out2 {output[1]}  --fix_mgi_id --detect_adapter_for_pe --trim_poly_g --trim_poly_x --length_required 19 --overrepresentation_analysis --json {wildcards.time}/s01_fastqc/{wildcards.sample}.fastp.Clean.json --html {TIME}/s01_fastqc/{wildcards.sample}.fastp.Clean.html --thread  {threads} >> {log} 2>&1 
+        # !!! note --fix_mgi_id cause memory leak, do not use
+        fastp --in1 {wildcards.time}/s01_fastqc/{wildcards.sample}_R1.fastq.gz \
+                --in2 {wildcards.time}/s01_fastqc/{wildcards.sample}_R2.fastq.gz \
+                --adapter_sequence CTGTCTCTTATACACATCT \
+                --adapter_sequence_r2 AGATGTGTATAAGAGACAG \
+                --length_required 50 \
+                --out1 {output[0]} --out2 {output[1]} \
+                --detect_adapter_for_pe --trim_poly_g --trim_poly_x \
+                --json {wildcards.time}/s01_fastqc/{wildcards.sample}.fastp.json \
+                --html {TIME}/s01_fastqc/{wildcards.sample}.fastp.html \
+                --thread {threads} -p 2>&1 >> {log} 
 
+        #echo "Working on clean data fastqc"
+        #fastqc -t  {threads} {output} -o {wildcards.time}/s01_fastqc/ 2>&1 >> {log}
+	#######################
+    """
+
+rule fastQC:
+    input:
+        R1 =  "{time}/s01_fastqc/{sample}_R1.fastq.gz",
+        R2 =  "{time}/s01_fastqc/{sample}_R2.fastq.gz",
+        R1_clean =  "{time}/s01_fastqc/{sample}_clean_R1.fastq.gz",
+        R2_clean =  "{time}/s01_fastqc/{sample}_clean_R2.fastq.gz"
+        #R1="raw.fastq/{sample}_1.fq.gz",
+        #R2="raw.fastq/{sample}_2.fq.gz"
+    output:
+        "{time}/s01_fastqc/{sample}_clean_R1_fastqc.html",
+        "{time}/s01_fastqc/{sample}_clean_R2_fastqc.html"
+    threads: 4
+    resources: mem_mb=6000
+    #conda:        "Genomics"
+    log:
+        "{time}/s01_fastqc/{sample}.fastqc.log"
+    shell: """
+        #######################
         echo "Working on clean data fastqc"
-        fastqc -t  {threads} {output} -o {wildcards.time}/s01_fastqc/ >> {log} 2>&1
+        fastqc -t {threads} {input} -o {wildcards.time}/s01_fastqc/ 2>&1 >>{log}
 	#######################
     """
 
@@ -69,23 +112,34 @@ rule BWA:
         raw_bam=temp("{time}/s02_alignment/s020_bwa/{sample}.bam"),
         bam=temp("{time}/s02_alignment/s020_bwa/{sample}.sort.bam"),
         bai=temp("{time}/s02_alignment/s020_bwa/{sample}.sort.bam.bai")
-    threads: 20
-    resources: mem_mb=16000
+    threads: 16
+    resources: mem_mb=25000
     #conda:        "Genomics"
     log:
         "{time}/s02_alignment/{sample}_alignment.log"
     params:
-        platform ="Illumina"
+        platform = config['PLATFORM']
     shell: """
         #######################	
         echo "Working on BWA alignment"
-	bwa mem -M -Y -t {threads} -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}\\tLB:{wildcards.sample}\\tPL:{params.platform}' {REFERENCE} {input.R1} {input.R2} | samtools view -Sbh -F 256 - -o {wildcards.time}/s02_alignment/s020_bwa/{wildcards.sample}.bam 2>{log}
+	bwa mem -M -Y -t {threads} \
+                -R '@RG\\tID:{wildcards.sample}\\tSM:{wildcards.sample}\\tLB:{wildcards.sample}\\tPL:{params.platform}' \
+                {REFERENCE} {input.R1} {input.R2} | samtools view -Sbh -F 256 - \
+                -o {wildcards.time}/s02_alignment/s020_bwa/{wildcards.sample}.bam 2>{log}
         echo "Working on samtools sorting"
-        samtools sort -m 3G -@ {threads} -T {wildcards.time}/s02_alignment/s020_bwa/tmp_{wildcards.sample} -o {output.bam} {TIME}/s02_alignment/s020_bwa/{wildcards.sample}.bam 2>{log}
+        samtools sort -m 1G -@ {threads} \
+                -T {wildcards.time}/s02_alignment/s020_bwa/tmp_{wildcards.sample} \
+                -o {output.bam} \
+                {TIME}/s02_alignment/s020_bwa/{wildcards.sample}.bam 2>>{log}
 
         echo "Working on bam flagstat"
 	samtools index -@ {threads} {output.bam} 2>>{log} 
-        samtools flagstat -@ {threads} {output.bam} > {wildcards.time}/s02_alignment/s020_bwa/{wildcards.sample}.sort.bam.stat 2>>{log}
+        samtools flagstat -@ {threads} {output.bam} \
+                > {wildcards.time}/s02_alignment/s020_bwa/{wildcards.sample}.sort.bam.stat 2>>{log}
+        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
+                ValidateSamFile \
+                -I {output.bam} -MODE SUMMARY \
+                -O {wildcards.time}/s02_alignment/s020_bwa/{wildcards.sample}.sort.bam.Val.txt
 	#######################
 	"""
 
@@ -105,13 +159,15 @@ rule MarkDup:
     shell: """
 	#######################
         echo "Working on MarkDuplicates"
-        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4  -Djava.io.tmpdir={wildcards.time}/s02_alignment/s021_Dedup/tmp_{wildcards.sample}" MarkDuplicates -AS true -M {output.metrics} -I {input.bam} -O {output.bam} --REMOVE_DUPLICATES false --VALIDATION_STRINGENCY SILENT  --CREATE_INDEX true >>{log} 2>&1
-        mv {wildcards.time}/s02_alignment/s021_Dedup/{wildcards.sample}.dd.bai {output.index}
-        echo "Working on CollectInsertSizeMetrics"
-        {GATK} CollectInsertSizeMetrics -I {output.bam} \
-                -O {wildcards.sample}_insert_size_metrics.txt -H {wildcards.sample}_insert_size_metrics.pdf -M 0.01 2>>{log}
+        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4 -Djava.io.tmpdir={wildcards.time}/s02_alignment/s021_Dedup/tmp_{wildcards.sample}" \
+                MarkDuplicates -AS true -M {output.metrics} -I {input.bam} -O {output.bam} \
+                --REMOVE_DUPLICATES false --VALIDATION_STRINGENCY SILENT  \
+                --CREATE_INDEX true 2>&1 >{log}
 
-        samtools flagstat {output.bam} > {wildcards.time}/s02_alignment/s021_Dedup/{wildcards.sample}.bam.stat 2>>{log}
+        mv {wildcards.time}/s02_alignment/s021_Dedup/{wildcards.sample}.dd.bai {output.index}
+        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
+                ValidateSamFile -I {output.bam} -MODE SUMMARY \
+                -O {wildcards.time}/s02_alignment/s021_Dedup/{wildcards.sample}.dd.bam.Val.txt
 	#######################
 	"""
 
@@ -122,8 +178,8 @@ rule GATK_BQSR:
     output:
         bam="{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam",
         index="{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam.bai"
-    threads: 20
-    resources: mem_mb=60000
+    threads: 16
+    resources: mem_mb=36000
     #conda:        "Genomics"
     log:
         "{time}/s02_alignment/{sample}_s022_Brecal.log"
@@ -132,14 +188,14 @@ rule GATK_BQSR:
         echo "Working on SplitIntervals for parallel BQSR"
         if [ ! -d "{wildcards.time}/s02_alignment/s022_Brecal/interval-files" ] 
         then
-            {GATK} SplitIntervals -R {REFERENCE} -L {REFBED} --scatter-count 20 \
+            {GATK} SplitIntervals -R {REFERENCE} -L {REFBED} --scatter-count 6 \
                     -O {wildcards.time}/s02_alignment/s022_Brecal/interval-files 2>&1 > {log}
         fi
 
         echo "Working on GATK BQSR"
         for sam in {wildcards.sample}
         do 
-            for i in `seq -f '%04g' 0 19`
+            for i in `seq -f '%04g' 0 5`
             do
                 outfile={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_data_${{i}}.table
                 {GATK} --java-options "-Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
@@ -150,30 +206,33 @@ rule GATK_BQSR:
             done
             wait
 
-            find {wildcards.time}/s02_alignment/s022_Brecal/ -type f -name "{wildcards.sample}*.table" > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.list 2>>{log}
-            {GATK} GatherBQSRReports -I {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.list -O {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table 2>>{log} && \
+            find {wildcards.time}/s02_alignment/s022_Brecal/ \
+                    -type f -name "{wildcards.sample}_dedup_recal_data_*.table" \
+                    > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.list 2>>{log}
 
-            echo "Working on ApplyBQSR"
-            for i in `seq -f '%04g' 0 19`
-            do 
-                bqfile={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table
-                outputf={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_${{i}}.bam
-                {GATK} --java-options "-Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
-                ApplyBQSR -L {wildcards.time}/s02_alignment/s022_Brecal/interval-files/${{i}}-scattered.interval_list \
-                -R {REFERENCE} -bqsr ${{bqfile}} \
-                --static-quantized-quals 10 --static-quantized-quals 20 --static-quantized-quals 30 \
-                -I {input.bam} -O ${{outputf}} 2>>{log} &
-            done
-            wait
+            {GATK} GatherBQSRReports -I {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.list \
+                    -O {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table 2>>{log} && \
+
+            {GATK} --java-options "-Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
+                    ApplyBQSR -R {REFERENCE} -bqsr {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.recal.table \
+                    --static-quantized-quals 10 --static-quantized-quals 20 --static-quantized-quals 30 \
+                    -I {input.bam} -O {output.bam} 2>>{log}
+            mv {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.marked.BQSR.bai {output.index}
         done
-        
-        echo "Working on merge BQSR bam"
-        samtools merge -f {output.bam} {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal*.bam 2>>{log} &&\
-        samtools index -@ {threads} {output.bam} 2>>{log}
+
+        # bam validation
+        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
+                ValidateSamFile -I {output.bam} -MODE SUMMARY \
+                -O {wildcards.sample}.marked.BQSR.bam.Val.txt
 
         echo "Working on CollectInsertSizeMetrics"
-        {GATK} CollectInsertSizeMetrics -I {output.bam} \
-                -O {wildcards.sample}_insert_size_metrics.txt -H {wildcards.sample}_insert_size_metrics.pdf -M 0.01 2>>{log}
+        {GATK} --java-options "-Xmx2G -XX:+UseParallelGC -XX:ParallelGCThreads=2" \
+                CollectInsertSizeMetrics -I {output.bam} \
+                --INCLUDE_DUPLICATES true  \
+                -M 0.01 \
+                -O {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_insert_size_metrics.txt \
+                -H {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_insert_size_metrics.pdf \
+                2>>{log}
 
         samtools flagstat {output.bam} > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.BQSR.bam.stat 2>>{log}
         rm -f {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_*.ba*
@@ -181,7 +240,8 @@ rule GATK_BQSR:
 
         echo "Working on Mosdepth"
         mkdir -p  {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_mosdepth
-        mosdepth --fast-mode -t {threads}  -b 5000 -Q 20 {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_mosdepth/{wildcards.sample}_depth {output.bam} 2>>{log}
+        mosdepth --fast-mode -t {threads} -b 5000 -Q 20 \
+                {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_mosdepth/{wildcards.sample}_depth {output.bam} 2>>{log}
 	#######################
 	"""
 
@@ -198,7 +258,7 @@ rule gVCF:
         mem_mb=36000 
     #conda:         "Genomics"
     log:
-        "{time}/s03_variant/{sample}_GATK.log"
+        "{time}/s03_variant/GATK/{sample}_gVCF.log"
     shell:"""
         #######################
         #!/bin/bash
@@ -224,11 +284,15 @@ rule gVCF:
             wait
         done
 
-        find {wildcards.time}/s03_variant/GATK/ -type f -name "{wildcards.sample}_*.g.vcf.gz" > {wildcards.time}/s03_variant/GATK/{wildcards.sample}_input.list
-        find {wildcards.time}/s03_variant/GATK/ -type f -name "{wildcards.sample}_*.g.vcf.gz.tbi" > {wildcards.time}/s03_variant/GATK/{wildcards.sample}_input.tbi.list
+        find {wildcards.time}/s03_variant/GATK/ -type f -name "{wildcards.sample}_*.g.vcf.gz" \
+                > {wildcards.time}/s03_variant/GATK/{wildcards.sample}_input.list
+        find {wildcards.time}/s03_variant/GATK/ -type f -name "{wildcards.sample}_*.g.vcf.gz.tbi" \
+                > {wildcards.time}/s03_variant/GATK/{wildcards.sample}_input.tbi.list
+
         {GATK} --java-options '-Xmx10g -XX:+UseParallelGC -XX:ParallelGCThreads=2' CombineGVCFs \
                 -R {REFERENCE} -V {wildcards.time}/s03_variant/GATK/{wildcards.sample}_input.list \
                 --create-output-variant-index -O {output[0]} 2>>{log}
+
         xargs rm < {wildcards.time}/s03_variant/GATK/{wildcards.sample}_input.list
         xargs rm < {wildcards.time}/s03_variant/GATK/{wildcards.sample}_input.tbi.list
         #######################
@@ -319,7 +383,11 @@ rule VariantRecalibrator:
         -O {output.indelvqsr} 2>&1 >>{log}
     
     echo "Working on plotBAF"
-    (zcat {output.indelvqsr} | head -n 10000 | zgrep ^# ; zgrep -v ^# {output.indelvqsr} | shuf -n 150000 | LC_ALL=C sort -k1,1V -k2,2n) | bgzip > {output.vqsrdown}
+    sleep 120
+
+    (zcat {output.indelvqsr} | head -n 10000 | zgrep ^# ; zgrep -v ^# {output.indelvqsr} | \
+            shuf -n 150000 | LC_ALL=C sort -k1,1V -k2,2n) | bgzip > {output.vqsrdown}
+
     tabix -p vcf {output.vqsrdown}
     Rscript {plotBAF} {output.vqsrdown} {wildcards.sample}
     """
@@ -394,14 +462,15 @@ rule clinSV:
     threads: 8
     resources: mem_mb=36000
     log:
-        "{time}/s03_variant/{sample}_clinSV.log"
+        "{time}/s03_variant/clinSV/{sample}_clinSV.log"
     singularity:
         "/HD101TB/bioinfo/liuxingmin/Clinical/WGS_cnv/clinsv_1.0.sif"
     #container:
     #    image("/HD101TB/bioinfo/liuxingmin/Clinical/WGS_cnv/clinsv_1.0.sif", singularity_args="--fakeroot -B $PWD:/root")
     shell: """
         #######################
-        clinsv -i "/root/{wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.marked.BQSR.bam" -ref /root/clinsv/refdata-b38 -p /root/{wildcards.time}/s03_variant/clinSV/{wildcards.sample}
+        clinsv -i "/root/{wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.marked.BQSR.bam" \
+                -ref /root/clinsv/refdata-b38 -p /root/{wildcards.time}/s03_variant/clinSV/{wildcards.sample}
         #######################
     """
 
@@ -420,7 +489,7 @@ rule ClassfyCNV:
         2
     resources: mem_mb=4000
     log:
-        "{time}/s03_variant/{sample}_ClassfyCNV.log"
+        "{time}/s03_variant/clinSV/{sample}_ClassfyCNV.log"
     shell:"""
         #######################
         grep -v LOW {input[0]} | cut -f18,19 | sed '1d;s/:/\t/;s/-/\t/' | awk '$4 =="DUP" || $4 =="DEL" ' > {output.cnv}
@@ -449,15 +518,42 @@ rule cnvkitPooled:
     conda:
         "Genomics"
     log:
-        "{time}/s03_variant/{sample}_cnvkit.log"
+        "{time}/s03_variant/cnvkit/{sample}_cnvkit.log"
     shell: """
 	#######################
         #!/bin/bash
         echo "Working on CNVkit"
         #source activate Genomics
 	cnvkit.py batch {input.bam} -r {PON} -p {threads} --method wgs \
-                --drop-low-coverage --scatter --diagram -d {wildcards.time}/s03_variant/cnvkit/ >{log} 2>&1
-	#cnvkit.py scatter -s {wildcards.time}/s03_variant/cnvkit/{wildcards.sample}.cn{{s,r}} -o s03_variant/cnvkit/{wildcards.sample}.pdf
+                --drop-low-coverage --scatter --diagram -d {wildcards.time}/s03_variant/cnvkit/ 2>&1 >{log}
+	#cnvkit.py scatter -s {wildcards.time}/s03_variant/cnvkit/{wildcards.sample}.cn{{s,r}} \
+        #        -o s03_variant/cnvkit/{wildcards.sample}.pdf
 	#######################
 	"""
 ############
+
+############ 
+rule multiQC:
+    input:
+        expand("{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam", sample=SAMPLES, time=TIME )
+    output:
+        "{time}/s04_report/multiqc_report.html"
+    threads: 2
+    resources: mem_mb=4000
+    conda:
+        "py38"
+    log:
+        "{time}/s04_report/multiqc.log"
+    shell: """
+	#######################
+        #!/bin/bash
+        ln -s -f $(realpath {wildcards.time}/s01_fastqc/*.fastp.*) {wildcards.time}/s04_report
+        ln -s -f $(realpath {wildcards.time}/s01_fastqc/*fastqc*) {wildcards.time}/s04_report
+        ln -s -f $(realpath {wildcards.time}/s02_alignment/s021_Dedup/*.markdup.txt) {wildcards.time}/s04_report
+        ln -s -f $(realpath {wildcards.time}/s02_alignment/s022_Brecal/*.BQSR.bam.stat) {wildcards.time}/s04_report
+        ln -s -f $(realpath {wildcards.time}/s02_alignment/s022_Brecal/*_insert_size*) {wildcards.time}/s04_report
+
+        echo "Working on multiQC"
+        multiqc -o {wildcards.time}/s04_report -p {wildcards.time}/s04_report
+	#######################
+        """
