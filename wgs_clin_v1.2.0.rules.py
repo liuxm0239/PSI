@@ -26,7 +26,7 @@ PON="/HD101TB/conda/Genome/cnvkit/PoN/Reference.cnn"
 
 rule all:
     input:
-        expand("{time}/s01_fastqc/{sample}_clean_R2_fastqc.html", sample=SAMPLES, time=TIME),
+        expand("{time}/s01_fastqc/{sample}_clean_R1_fastqc.html", sample=SAMPLES, time=TIME),
         expand("{time}/s02_alignment/s022_Brecal/{sample}.marked.BQSR.bam", sample=SAMPLES, time=TIME ),
         #expand("{time}/s03_variant/cnvkit/{sample}.marked.BQSR.call.cns", sample=SAMPLES, time=TIME),
         expand("{time}/s04_report/multiqc_report.html", time=TIME )
@@ -54,7 +54,6 @@ rule FASTP:
     shell: """
         #######################
 	#echo "Working on raw data fastqc"
-	#fastqc -t {threads} {input.R1} {input.R2} -o {wildcards.time}/s01_fastqc/ 2>&1 > {log} 
         if [ -f {wildcards.time}/s01_fastqc/{wildcards.sample}_R1.fastq.gz ]; then
             ls {wildcards.time}/s01_fastqc/{wildcards.sample}* >\
                     {wildcards.time}/s01_fastqc/{wildcards.sample}_old
@@ -68,9 +67,9 @@ rule FASTP:
         # !!! note --fix_mgi_id cause memory leak, do not use
         fastp --in1 {wildcards.time}/s01_fastqc/{wildcards.sample}_R1.fastq.gz \
                 --in2 {wildcards.time}/s01_fastqc/{wildcards.sample}_R2.fastq.gz \
+                --length_required 30 \
                 --out1 {output[0]} --out2 {output[1]} \
                 --detect_adapter_for_pe --trim_poly_g --trim_poly_x \
-                --length_required 19 \
                 --json {wildcards.time}/s01_fastqc/{wildcards.sample}.fastp.json \
                 --html {TIME}/s01_fastqc/{wildcards.sample}.fastp.html \
                 --thread {threads} -p 2>&1 >> {log} 
@@ -86,11 +85,13 @@ rule fastQC:
         R2 =  "{time}/s01_fastqc/{sample}_R2.fastq.gz",
         R1_clean =  "{time}/s01_fastqc/{sample}_clean_R1.fastq.gz",
         R2_clean =  "{time}/s01_fastqc/{sample}_clean_R2.fastq.gz"
+        #R1="raw.fastq/{sample}_1.fq.gz",
+        #R2="raw.fastq/{sample}_2.fq.gz"
     output:
         "{time}/s01_fastqc/{sample}_clean_R1_fastqc.html",
         "{time}/s01_fastqc/{sample}_clean_R2_fastqc.html"
     threads: 4
-    resources: mem_mb=2000
+    resources: mem_mb=6000
     #conda:        "Genomics"
     log:
         "{time}/s01_fastqc/{sample}.fastqc.log"
@@ -110,7 +111,7 @@ rule BWA:
         bam=temp("{time}/s02_alignment/s020_bwa/{sample}.sort.bam"),
         bai=temp("{time}/s02_alignment/s020_bwa/{sample}.sort.bam.bai")
     threads: 16
-    resources: mem_mb=16000
+    resources: mem_mb=25000
     #conda:        "Genomics"
     log:
         "{time}/s02_alignment/{sample}_alignment.log"
@@ -136,7 +137,7 @@ rule BWA:
         {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
                 ValidateSamFile \
                 -I {output.bam} -MODE SUMMARY \
-                -O {wildcards.time}/s02_alignment/s020_bwa/{wildcards.sample}.sort.bam.Val.txt
+                -O {wildcards.time}/s02_alignment/s020_bwa/{wildcards.sample}.sort.bam.Val.txt &
 	#######################
 	"""
 
@@ -156,7 +157,7 @@ rule MarkDup:
     shell: """
 	#######################
         echo "Working on MarkDuplicates"
-        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4 -Djava.io.tmpdir={wildcards.time}/s02_alignment/s021_Dedup/tmp_{wildcards.sample}" \
+        {GATK} --java-options "-Xmx25G -XX:+UseParallelGC -XX:ParallelGCThreads=4 -Djava.io.tmpdir={wildcards.time}/s02_alignment/s021_Dedup/tmp_{wildcards.sample}" \
                 MarkDuplicates -AS true -M {output.metrics} -I {input.bam} -O {output.bam} \
                 --REMOVE_DUPLICATES false --VALIDATION_STRINGENCY SILENT  \
                 --CREATE_INDEX true 2>&1 >{log}
@@ -195,7 +196,7 @@ rule GATK_BQSR:
             for i in `seq -f '%04g' 0 5`
             do
                 outfile={wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_data_${{i}}.table
-                {GATK} --java-options "-Xmx4G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
+                {GATK} --java-options "-Xmx6G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
                 BaseRecalibrator -L {wildcards.time}/s02_alignment/s022_Brecal/interval-files/${{i}}-scattered.interval_list \
                 -R {REFERENCE} \
                 --known-sites {DBSNP} --known-sites {OMNI} --known-sites {PHASE1} --known-sites {MILLS} \
@@ -217,10 +218,6 @@ rule GATK_BQSR:
             mv {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.marked.BQSR.bai {output.index}
         done
 
-        # bam validation
-        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
-                ValidateSamFile -I {output.bam} -MODE SUMMARY \
-                -O {wildcards.sample}.marked.BQSR.bam.Val.txt
 
         echo "Working on CollectInsertSizeMetrics"
         {GATK} --java-options "-Xmx2G -XX:+UseParallelGC -XX:ParallelGCThreads=2" \
@@ -231,14 +228,21 @@ rule GATK_BQSR:
                 -H {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_insert_size_metrics.pdf \
                 2>>{log}
 
-        samtools flagstat {output.bam} > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.BQSR.bam.stat 2>>{log}
-        rm -f {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_*.ba*
-        rm -f {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}*.table
 
         echo "Working on Mosdepth"
         mkdir -p  {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_mosdepth
         mosdepth --fast-mode -t {threads} -b 5000 -Q 20 \
                 {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_mosdepth/{wildcards.sample}_depth {output.bam} 2>>{log}
+
+        samtools flagstat {output.bam} > {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}.BQSR.bam.stat 2>>{log}
+        # bam validation
+
+        {GATK} --java-options "-Xmx20G -XX:+UseParallelGC -XX:ParallelGCThreads=4" \
+                ValidateSamFile -I {output.bam} -MODE SUMMARY \
+                -O {wildcards.sample}.marked.BQSR.bam.Val.txt &
+
+        rm -f {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}_dedup_recal_*.ba*
+        rm -f {wildcards.time}/s02_alignment/s022_Brecal/{wildcards.sample}*.table
 	#######################
 	"""
 
@@ -551,6 +555,6 @@ rule multiQC:
         ln -s -f $(realpath {wildcards.time}/s02_alignment/s022_Brecal/*_insert_size*) {wildcards.time}/s04_report
 
         echo "Working on multiQC"
-        multiqc -o {wildcards.time}/s04_report -p {wildcards.time}/s04_report
+        multiqc -o {wildcards.time}/s04_report/ -p {wildcards.time}/s04_report/ 2>{log}
 	#######################
         """
